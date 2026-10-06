@@ -1,6 +1,6 @@
 # Home Server Infrastructure
 
-**Last audited:** October 5, 2026
+**Last audited:** October 7, 2026
 
 This repository documents how my Raspberry Pi home server is organized, how its services work together, and where application data is stored.
 
@@ -8,13 +8,14 @@ This repository documents how my Raspberry Pi home server is organized, how its 
 
 The server is a **Raspberry Pi 5 with 8 GB of RAM** running **Ubuntu 24.04 LTS**. Docker and Docker Compose are used to run most applications as isolated containers.
 
-The infrastructure is divided into five main layers:
+The infrastructure is divided into six main layers:
 
 1. **Hardware** — Raspberry Pi, system SSD, and bulk-storage HDD.
 2. **Operating system** — Ubuntu Server and host-level services.
-3. **Private access** — Tailscale and SSH for administration.
+3. **Access and ingress** — Tailscale and SSH for administration, plus a managed tunnel for selected applications.
 4. **Application platform** — Docker and separate Compose stacks.
-5. **Data and monitoring** — persistent storage, databases, health checks, and SSD temperature monitoring.
+5. **Storage** — local SSD/HDD storage and cloud-backed media mounts.
+6. **Monitoring and recovery** — logs, health checks, temperature monitoring, and storage recovery automation.
 
 ```mermaid
 flowchart TD
@@ -24,6 +25,7 @@ flowchart TD
     Docker[Docker and Docker Compose]
 
     Dashboard[Glance dashboard]
+    Logs[Dozzle log viewer]
     Media[Media stack]
     Photos[Immich photo stack]
     Automation[n8n automation stack]
@@ -33,7 +35,9 @@ flowchart TD
     Databases[PostgreSQL and Valkey]
     SSD[System SSD]
     HDD[Bulk-storage HDD]
+    Cloud[Cloud-backed media mounts]
     Monitor[Health and temperature monitoring]
+    Watchdog[Storage watchdog]
 
     User --> VPN
     VPN --> Host
@@ -41,6 +45,7 @@ flowchart TD
     Host --> Monitor
 
     Docker --> Dashboard
+    Docker --> Logs
     Docker --> Media
     Docker --> Photos
     Docker --> Automation
@@ -52,8 +57,11 @@ flowchart TD
 
     Docker --> SSD
     Media --> HDD
+    Media --> Cloud
     Photos --> HDD
     Sync --> HDD
+    Host --> Watchdog
+    Watchdog --> Cloud
 ```
 
 ## Hardware Layout
@@ -66,7 +74,7 @@ flowchart TD
 | Approximately 256 GB SSD | Stores Ubuntu, Docker, application configuration, and databases |
 | Approximately 500 GB HDD | Stores larger media, photo, and synchronized files |
 
-The SSD is the primary boot and application drive. Its usage was approximately **29%** during the latest audit. The HDD provides additional capacity for data that does not need SSD-level performance.
+The SSD is the primary boot and application drive. During the latest audit, the SSD was approximately **30% used** and the HDD was approximately **35% used**. The HDD provides additional capacity for data that does not need SSD-level performance.
 
 ## Host Operating System
 
@@ -77,8 +85,8 @@ The base system runs:
 | Ubuntu Server | Ubuntu 24.04.4 LTS |
 | Linux kernel | Raspberry Pi Linux 6.8.0 build |
 | CPU architecture | ARM64 / `aarch64` |
-| Docker Engine | Version 29.8 |
-| Docker Compose | Version 5.5 |
+| Docker Engine | Version 29.8.0 |
+| Docker Compose | Version 5.5.1 |
 | Tailscale | Private networking between approved devices |
 | SSH | Command-line administration through the private network |
 
@@ -96,9 +104,9 @@ This structure provides several benefits:
 - A broken update is easier to isolate and roll back.
 - Services within a stack can communicate using Docker networking.
 
-The server had **19 running containers** during the latest audit.
+The server had **20 running containers** during the latest audit.
 
-## Dashboard
+## Dashboard and Logs
 
 ### Glance
 
@@ -113,6 +121,10 @@ Glance dashboard
     |
 Other self-hosted services
 ```
+
+### Dozzle
+
+Dozzle provides a lightweight browser-based view of Docker logs. It supports day-to-day troubleshooting without requiring a full metrics and log-aggregation platform.
 
 ## Media Stack
 
@@ -252,9 +264,13 @@ The HDD contains larger files such as:
 - Downloaded content
 - Synchronized files
 
+### Cloud-backed media mounts
+
+Read-through media mounts extend the local library with cloud-backed storage. Host-level mount services make the remote libraries available to the media stack, while a storage watchdog checks that the mounts remain usable and refreshes dependent services after recovery.
+
 Container images are replaceable, but configuration, databases, and user files are not. Those persistent data categories require backups.
 
-## Private Access
+## Access and Ingress
 
 Tailscale connects approved devices to the server through a private network. SSH and administrative web interfaces can be accessed through this private connection.
 
@@ -273,7 +289,7 @@ Raspberry Pi server
 Docker application
 ```
 
-This approach avoids making administrative access directly dependent on the local network and reduces the need to expose management services publicly.
+This approach avoids making administrative access directly dependent on the local network and reduces the need to expose management services publicly. A managed tunnel client also runs on the host for selected application traffic; administrative access remains separated from that application-ingress path.
 
 ## Monitoring
 
@@ -281,7 +297,9 @@ The server currently uses several lightweight monitoring methods:
 
 - Docker reports whether containers are running.
 - Supported containers provide health-check results.
+- Dozzle provides a lightweight view of container logs.
 - A user service monitors SSD temperature.
+- A host timer checks cloud-backed storage mounts and coordinates recovery.
 - Storage usage is checked during infrastructure audits.
 - System and container updates are reviewed as part of maintenance.
 
@@ -292,10 +310,14 @@ During the latest audit:
 | Docker | Active |
 | Tailscale | Active |
 | SSH | Active |
+| Managed application tunnel | Active |
 | SSD temperature monitor | Active |
-| Containers | 19 running |
-| Configured container health checks | Healthy |
-| System SSD usage | 29% |
+| Storage watchdog | Active; latest run successful |
+| Containers | 20 running |
+| Configured container health checks | 7 healthy, 0 unhealthy |
+| System SSD usage | 30% |
+| Bulk-storage HDD usage | 35% |
+| Host temperature | Approximately 54°C |
 | Ubuntu package updates | Pending review |
 
 ## Maintenance Workflow
@@ -306,10 +328,11 @@ Regular maintenance includes:
 2. Review available Ubuntu security updates.
 3. Review container-image updates and release notes.
 4. Check storage usage and disk health.
-5. Confirm that the SSD temperature monitor is active.
-6. Back up application configuration and databases.
-7. Test that important backups can actually be restored.
-8. Remove unused images and volumes only after confirming they are unnecessary.
+5. Confirm that the cloud-backed mounts and storage watchdog are healthy.
+6. Confirm that the SSD temperature monitor is active.
+7. Back up application configuration and databases.
+8. Test that important backups can actually be restored.
+9. Remove unused images and volumes only after confirming they are unnecessary.
 
 ## Recovery Model
 
@@ -323,6 +346,7 @@ Recovery therefore depends on preserving:
 - PostgreSQL database backups
 - Vaultwarden data
 - Important photo, media, and synchronized files
+- Storage-mount definitions and recovery automation
 
 With those items available, the operating system and Docker can be reinstalled, the application stacks recreated, and persistent data restored.
 
